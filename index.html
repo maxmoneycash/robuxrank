@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>RobuxRank</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b1530;color:#c9d3ea;font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  main{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;box-sizing:border-box;text-align:center}
+  .mark{font-weight:800;font-size:20px;letter-spacing:-.01em;color:#fff}
+  .mark b{color:#4f8cff;font-weight:800}
+  #msg{color:#8a97b8;font-size:13px;min-height:20px}
+  #msg.down{color:#e8b04a}
+  #links{font-size:12px;color:#5d6a8c}
+  #links a{color:#8fb0ff;text-decoration:none;margin:0 6px}
+</style>
+</head>
+<body>
+<main>
+  <div class="mark">Robux<b>Rank</b></div>
+  <div id="msg">Finding the live server...</div>
+  <div id="links"></div>
+</main>
+<script>
+(function () {
+  var OWNER = "maxmoneycash", REPO = "robuxrank";
+  var BASE = "/" + REPO;                 // project site lives under /robuxrank
+  var PROBE_MS = 4000, RETRY_S = 10, KEY = "rr_urls";
+  var msg = document.getElementById("msg"), links = document.getElementById("links");
+
+  // Path/query/hash to carry over: /robuxrank/game/1?x#y -> /game/1?x#y
+  var p = location.pathname;
+  if (p.indexOf(BASE) === 0) p = p.slice(BASE.length);
+  p = p.replace(/\/(index|404)\.html$/, "/");
+  if (!p) p = "/";
+  var tail = p + location.search + location.hash;
+
+  function timeout(ms) {
+    var c = new AbortController();
+    setTimeout(function () { c.abort(); }, ms);
+    return c.signal;
+  }
+  function getJSON(url, opts) {
+    return fetch(url, Object.assign({ cache: "no-store", signal: timeout(6000) }, opts || {}))
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); });
+  }
+  function urlsOf(doc) {
+    var u = (doc && doc.urls) || [];
+    return u.filter(function (x) { return typeof x === "string" && /^https:\/\//.test(x); })
+            .map(function (x) { return x.replace(/\/+$/, ""); });
+  }
+  // 1) contents API (fresh within seconds; 60 req/h per visitor IP unauthenticated)
+  // 2) raw.githubusercontent.com (no API quota, CDN-cached up to ~5 min)
+  // 3) the Pages copy of urls.json (updated after the built-in Pages rebuild)
+  function sources() {
+    var t = Date.now();
+    return [
+      function () {
+        return getJSON("https://api.github.com/repos/" + OWNER + "/" + REPO + "/contents/urls.json?ref=main&t=" + t,
+                       { headers: { Accept: "application/vnd.github+json" } })
+          .then(function (d) { return JSON.parse(atob(String(d.content).replace(/\s/g, ""))); });
+      },
+      function () { return getJSON("https://raw.githubusercontent.com/" + OWNER + "/" + REPO + "/main/urls.json?t=" + t); },
+      function () { return getJSON(BASE + "/urls.json?t=" + t); }
+    ];
+  }
+  function candidates() {
+    var list = sources(), i = 0, seen = [];
+    function next() {
+      if (i >= list.length) return Promise.resolve([]);
+      return list[i++]().then(urlsOf).then(function (u) { return u.length ? u : next(); }, next);
+    }
+    return next().then(function (u) {
+      try { if (u.length) localStorage.setItem(KEY, JSON.stringify(u)); } catch (e) {}
+      var old = [];
+      try { old = JSON.parse(localStorage.getItem(KEY) || "[]"); } catch (e) {}
+      return u.concat(old).filter(function (x) { if (seen.indexOf(x) >= 0) return false; seen.push(x); return true; });
+    });
+  }
+  function probe(base) {
+    return fetch(base + "/api/health?t=" + Date.now(), { mode: "cors", cache: "no-store", signal: timeout(PROBE_MS) })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function (j) { if (!j || j.ok === false) throw new Error("unhealthy"); return base; });
+  }
+  function firstHealthy(urls) {
+    if (!urls.length) return Promise.reject(new Error("no candidates"));
+    return new Promise(function (resolve, reject) {
+      var left = urls.length;
+      urls.forEach(function (u) {
+        probe(u).then(resolve, function () { if (--left === 0) reject(new Error("none healthy")); });
+      });
+    });
+  }
+  function attempt() {
+    msg.className = ""; msg.textContent = "Finding the live server...";
+    candidates().then(firstHealthy).then(function (base) {
+      location.replace(base + tail);
+    }, function () {
+      var n = RETRY_S;
+      msg.className = "down";
+      (function tick() {
+        if (n <= 0) return attempt();
+        msg.textContent = "Server is restarting, retrying in " + n + "s";
+        n--; setTimeout(tick, 1000);
+      })();
+    });
+  }
+  attempt();
+})();
+</script>
+</body>
+</html>
